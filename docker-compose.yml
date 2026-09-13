@@ -1,0 +1,32 @@
+# Local development stack: backend + frontend.
+# Cosmos DB / Azure AI Search are cloud services — point .env at real Azure
+# resources, or leave them unset to run with job status held only in-memory
+# behavior degraded (the app expects Cosmos to be configured for persistence).
+version: "3.9"
+
+services:
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
+    env_file:
+      - ./backend/.env
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/v1/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    ports:
+      - "3000:3000"
+    environment:
+      - NEXT_PUBLIC_API_BASE_URL=http://localhost:8000/api/v1
+      - BACKEND_API_TOKEN=${API_AUTH_TOKEN:-change-me-local-dev-token}
+    depends_on:
+      - backend

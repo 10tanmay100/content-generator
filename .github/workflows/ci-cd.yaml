@@ -1,0 +1,229 @@
+# ============================================================================
+# CI/CD: test on every push/PR; on push to main, build+push images, deploy
+# the Bicep infrastructure, and roll out new Container App revisions.
+#
+# Auth uses OpenID Connect (OIDC) federated credentials — no client secret
+# or password is stored in GitHub at all. See the one-time Azure setup in
+# the repo's DEPLOYMENT.md before this workflow can run.
+# ============================================================================
+name: CI/CD
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  id-token: write   # required for OIDC login to Azure
+  contents: read
+
+env:
+  RESOURCE_GROUP: rg-content-pipeline-dev
+  ACR_NAME: contentpipedevacr          # must match infra output acrLoginServer's prefix (no ".azurecr.io")
+  BACKEND_REPO: content-backend
+  FRONTEND_REPO: content-frontend
+
+jobs:
+  # --------------------------------------------------------------------------
+  test-backend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install dependencies
+        working-directory: backend
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+      - name: Run tests
+        working-directory: backend
+        env:
+          API_AUTH_TOKEN: test-token
+          CREWAI_DISABLE_TELEMETRY: "true"
+        run: pytest -v
+
+  # --------------------------------------------------------------------------
+  build-frontend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: frontend/package-lock.json
+      - name: Install dependencies
+        working-directory: frontend
+        run: npm ci
+      - name: Build
+        working-directory: frontend
+        run: npm run build
+
+  # --------------------------------------------------------------------------
+  build-and-push:
+    needs: [test-backend, build-frontend]
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    runs-on: ubuntu-latest
+    outputs:
+      image-tag: ${{ steps.vars.outputs.image_tag }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set image tag
+        id: vars
+        run: echo "image_tag=${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+
+      - name: Azure login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Build & push backend image (ACR Tasks — no Docker login needed)
+        run: |
+          az acr build \
+            --registry ${{ env.ACR_NAME }} \
+            --image ${{ env.BACKEND_REPO }}:${{ steps.vars.outputs.image_tag }} \
+            --image ${{ env.BACKEND_REPO }}:latest \
+            ./backend
+
+      - name: Build & push frontend image
+        run: |
+          az acr build \
+            --registry ${{ env.ACR_NAME }} \
+            --image ${{ env.FRONTEND_REPO }}:${{ steps.vars.outputs.image_tag }} \
+            --image ${{ env.FRONTEND_REPO }}:latest \
+            ./frontend
+
+  # --------------------------------------------------------------------------
+  deploy-infra:
+    needs: build-and-push
+    runs-on: ubuntu-latest
+    environment: production   # gives you a manual-approval gate if you enable one under Settings > Environments
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Azure login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Deploy Bicep template
+        run: |
+          az deployment group create \
+            --resource-group ${{ env.RESOURCE_GROUP }} \
+            --template-file infra/main.bicep \
+            --parameters infra/parameters.json \
+            --parameters \
+              backendImage=${{ env.ACR_NAME }}.azurecr.io/${{ env.BACKEND_REPO }}:${{ needs.build-and-push.outputs.image-tag }} \
+              frontendImage=${{ env.ACR_NAME }}.azurecr.io/${{ env.FRONTEND_REPO }}:${{ needs.build-and-push.outputs.image-tag }} \
+              apiAuthToken=${{ secrets.API_AUTH_TOKEN }}
+
+  # --------------------------------------------------------------------------
+  deploy-apps:
+    needs: [deploy-infra, build-and-push]
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - name: Azure login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Roll out backend
+        run: |
+          az containerapp update \
+            --name contentpipe-dev-backend \
+            --resource-group ${{ env.RESOURCE_GROUP }} \
+            --image ${{ env.ACR_NAME }}.azurecr.io/${{ env.BACKEND_REPO }}:${{ needs.build-and-push.outputs.image-tag }}
+
+      - name: Roll out frontend
+        run: |
+          az containerapp update \
+            --name contentpipe-dev-frontend \
+            --resource-group ${{ env.RESOURCE_GROUP }} \
+            --image ${{ env.ACR_NAME }}.azurecr.io/${{ env.FRONTEND_REPO }}:${{ needs.build-and-push.outputs.image-tag }}
+
+      - name: Print URLs
+        run: |
+          echo "Backend:  https://$(az containerapp show -n contentpipe-dev-backend -g ${{ env.RESOURCE_GROUP }} --query properties.configuration.ingress.fqdn -o tsv)"
+          echo "Frontend: https://$(az containerapp show -n contentpipe-dev-frontend -g ${{ env.RESOURCE_GROUP }} --query properties.configuration.ingress.fqdn -o tsv)"
+
+  # --------------------------------------------------------------------------
+  # Post-deploy verification: actually calls the live backend API — not just
+  # checking that the container started. /content/generate/sync exercises
+  # the full real path (backend -> Ollama over the internal network -> back),
+  # so a pass here proves Ollama is reachable and generating, not just "up".
+  #
+  # Ollama itself is never called directly from this job: it's internal-only
+  # ingress (not exposed to the public internet), which is the deliberate,
+  # secure choice for an unauthenticated local-model server. Going through
+  # the public backend API is both the safer path and the more meaningful
+  # test, since it's the same path real users hit.
+  smoke-test:
+    needs: [deploy-apps, build-and-push]
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - name: Azure login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Resolve backend URL
+        id: url
+        run: |
+          FQDN=$(az containerapp show -n contentpipe-dev-backend -g ${{ env.RESOURCE_GROUP }} --query properties.configuration.ingress.fqdn -o tsv)
+          echo "backend_url=https://$FQDN" >> "$GITHUB_OUTPUT"
+
+      - name: Wait for the backend to be healthy
+        run: |
+          URL="${{ steps.url.outputs.backend_url }}/api/v1/health"
+          echo "Polling $URL ..."
+          for i in $(seq 1 20); do
+            if curl -sf --max-time 10 "$URL" > /dev/null; then
+              echo "Backend is healthy."
+              exit 0
+            fi
+            echo "Not ready yet (attempt $i/20), waiting 15s..."
+            sleep 15
+          done
+          echo "::error::Backend never became healthy."
+          exit 1
+
+      # Ollama needs several minutes on a fresh deploy to pull both models
+      # over the network before it can actually generate anything, so this
+      # step allows a generous timeout on top of the health check above.
+      - name: Generate real content through the deployed API (exercises Ollama end-to-end)
+        run: |
+          RESPONSE=$(curl -sf --max-time 900 \
+            -X POST "${{ steps.url.outputs.backend_url }}/api/v1/content/generate/sync" \
+            -H "Authorization: Bearer ${{ secrets.API_AUTH_TOKEN }}" \
+            -H "Content-Type: application/json" \
+            -d '{
+              "topic": "A short smoke test of the deployment pipeline",
+              "content_format": "blog",
+              "word_count": 150,
+              "generate_image": false,
+              "generate_social_variants": false
+            }')
+
+          echo "$RESPONSE" | head -c 500
+          echo ""
+
+          if echo "$RESPONSE" | grep -q '"body_markdown"'; then
+            echo "Smoke test passed: received a real generated article from the deployed pipeline."
+          else
+            echo "::error::Smoke test failed: response did not contain a generated article."
+            exit 1
+          fi

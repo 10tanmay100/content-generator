@@ -1,0 +1,43 @@
+# Core API
+# NOTE: pydantic / pydantic-settings / python-dotenv are left as ranges (not
+# exact pins) because crewai pins tight compatible-release constraints on
+# these; ranges let pip resolve a version that satisfies both.
+fastapi==0.115.0
+uvicorn[standard]>=0.31.1,<0.35
+pydantic>=2.11.9,<2.13
+pydantic-settings>=2.14.2,<3
+python-dotenv>=1.2.2,<2
+python-multipart==0.0.9
+
+# CrewAI + LLM (Groq)
+# Note: crewai-tools is intentionally NOT included — this project uses its own
+# lightweight custom tools (app/tools/*) built on crewai.tools.BaseTool.
+# Groq access goes through crewai's built-in LLM class (litellm under the
+# hood, "groq/<model>"), so no separate langchain-groq/groq SDK is needed.
+# litellm is required explicitly for non-"native" providers like Groq.
+crewai==1.15.21
+litellm>=1.44.22
+
+# Azure SDKs
+azure-cosmos==4.7.0
+azure-search-documents==11.5.1
+azure-identity==1.17.1
+azure-storage-blob==12.22.0
+opencensus-ext-azure==1.1.13
+applicationinsights==0.11.10
+
+# Web/search tools
+duckduckgo-search==6.2.13
+requests==2.32.3
+beautifulsoup4==4.12.3
+
+# Utilities
+tenacity==9.0.0
+structlog==24.4.0
+orjson==3.10.7
+
+# Testing
+pytest==8.3.3
+pytest-asyncio==0.24.0
+pytest-mock==3.14.0
+httpx>=0.28.1,<0.29

@@ -1,0 +1,15 @@
+[project]
+name = "content-creation-pipeline"
+version = "1.0.0"
+requires-python = ">=3.11"
+
+[tool.black]
+line-length = 110
+target-version = ["py311"]
+
+[tool.ruff]
+line-length = 110
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP"]

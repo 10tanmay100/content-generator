@@ -1,0 +1,160 @@
+# ============================================================================
+# Azure DevOps Pipeline: build, test, containerize, and deploy the
+# CrewAI Content Creation Pipeline (backend + frontend) to Azure Container Apps.
+# ============================================================================
+trigger:
+  branches:
+    include: [main]
+  paths:
+    include: [backend/*, frontend/*, infra/*, devops/*]
+
+pr:
+  branches:
+    include: [main]
+
+variables:
+  - group: content-pipeline-secrets      # ACR creds, GROQ_API_KEY, Cosmos/Search keys (Library variable group)
+  - name: acrName
+    value: 'contentpipedevacr'
+  - name: backendImageRepo
+    value: 'content-backend'
+  - name: frontendImageRepo
+    value: 'content-frontend'
+  - name: imageTag
+    value: '$(Build.BuildId)'
+  - name: resourceGroup
+    value: 'rg-content-pipeline-dev'
+
+stages:
+  # --------------------------------------------------------------------------
+  - stage: Test
+    displayName: 'Lint & Test'
+    jobs:
+      - job: BackendTests
+        pool: { vmImage: 'ubuntu-latest' }
+        steps:
+          - task: UsePythonVersion@0
+            inputs: { versionSpec: '3.11' }
+          - script: |
+              cd backend
+              pip install -r requirements.txt
+              pip install ruff
+              ruff check app || true
+              pytest --junitxml=test-results.xml
+            displayName: 'Install deps, lint, and run backend tests'
+          - task: PublishTestResults@2
+            condition: succeededOrFailed()
+            inputs:
+              testResultsFiles: 'backend/test-results.xml'
+              testRunTitle: 'Backend Unit Tests'
+
+      - job: FrontendLint
+        pool: { vmImage: 'ubuntu-latest' }
+        steps:
+          - task: NodeTool@0
+            inputs: { versionSpec: '20.x' }
+          - script: |
+              cd frontend
+              npm install
+              npm run lint || true
+              npm run build
+            displayName: 'Install, lint, and build frontend'
+
+  # --------------------------------------------------------------------------
+  - stage: Build
+    displayName: 'Build & Push Container Images'
+    dependsOn: Test
+    condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/main'))
+    jobs:
+      - job: BuildBackend
+        pool: { vmImage: 'ubuntu-latest' }
+        steps:
+          - task: Docker@2
+            displayName: 'Build & push backend image'
+            inputs:
+              containerRegistry: 'acr-service-connection'
+              repository: '$(backendImageRepo)'
+              command: 'buildAndPush'
+              Dockerfile: 'backend/Dockerfile'
+              buildContext: 'backend'
+              tags: |
+                $(imageTag)
+                latest
+
+      - job: BuildFrontend
+        pool: { vmImage: 'ubuntu-latest' }
+        steps:
+          - task: Docker@2
+            displayName: 'Build & push frontend image'
+            inputs:
+              containerRegistry: 'acr-service-connection'
+              repository: '$(frontendImageRepo)'
+              command: 'buildAndPush'
+              Dockerfile: 'frontend/Dockerfile'
+              buildContext: 'frontend'
+              tags: |
+                $(imageTag)
+                latest
+
+  # --------------------------------------------------------------------------
+  - stage: DeployInfra
+    displayName: 'Deploy/Update Azure Infrastructure (Bicep)'
+    dependsOn: Build
+    jobs:
+      - deployment: DeployBicep
+        pool: { vmImage: 'ubuntu-latest' }
+        environment: 'content-pipeline-dev'
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - task: AzureCLI@2
+                  displayName: 'Deploy Bicep template'
+                  inputs:
+                    azureSubscription: 'azure-service-connection'
+                    scriptType: bash
+                    scriptLocation: inlineScript
+                    inlineScript: |
+                      az deployment group create \
+                        --resource-group $(resourceGroup) \
+                        --template-file infra/main.bicep \
+                        --parameters infra/parameters.json \
+                        --parameters groqApiKey=$(GROQ_API_KEY) \
+                          backendImage=$(acrName).azurecr.io/$(backendImageRepo):$(imageTag) \
+                          frontendImage=$(acrName).azurecr.io/$(frontendImageRepo):$(imageTag)
+
+  # --------------------------------------------------------------------------
+  - stage: DeployApps
+    displayName: 'Deploy Container Apps Revisions'
+    dependsOn: DeployInfra
+    jobs:
+      - deployment: DeployBackend
+        pool: { vmImage: 'ubuntu-latest' }
+        environment: 'content-pipeline-dev'
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - task: AzureCLI@2
+                  displayName: 'Update backend Container App'
+                  inputs:
+                    azureSubscription: 'azure-service-connection'
+                    scriptType: bash
+                    scriptLocation: inlineScript
+                    inlineScript: |
+                      az containerapp update \
+                        --name contentpipe-dev-backend \
+                        --resource-group $(resourceGroup) \
+                        --image $(acrName).azurecr.io/$(backendImageRepo):$(imageTag)
+
+                - task: AzureCLI@2
+                  displayName: 'Update frontend Container App'
+                  inputs:
+                    azureSubscription: 'azure-service-connection'
+                    scriptType: bash
+                    scriptLocation: inlineScript
+                    inlineScript: |
+                      az containerapp update \
+                        --name contentpipe-dev-frontend \
+                        --resource-group $(resourceGroup) \
+                        --image $(acrName).azurecr.io/$(frontendImageRepo):$(imageTag)

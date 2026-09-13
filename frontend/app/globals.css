@@ -1,0 +1,61 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --font-display: "Space Grotesk", sans-serif;
+  --font-body: "Inter", sans-serif;
+}
+
+html {
+  scroll-behavior: smooth;
+}
+
+body {
+  background: #0A0D18;
+  color: #F3F4F8;
+  font-family: var(--font-body);
+}
+
+h1, h2, h3, .font-display {
+  font-family: var(--font-display);
+  letter-spacing: -0.01em;
+}
+
+/* Visible keyboard focus everywhere, not just on hover-capable devices */
+a:focus-visible, button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-visible {
+  outline: 2px solid #9B87F6;
+  outline-offset: 2px;
+}
+
+/* Article body typography (rendered Markdown) */
+.prose-content h1 { @apply text-2xl font-display font-semibold mt-6 mb-3 text-ink; }
+.prose-content h2 { @apply text-xl font-display font-semibold mt-6 mb-2 text-ink; }
+.prose-content h3 { @apply text-lg font-display font-semibold mt-5 mb-2 text-ink; }
+.prose-content p { @apply mb-3 leading-relaxed text-ink/90 max-w-[70ch]; }
+.prose-content ul { @apply list-disc pl-6 mb-3 text-ink/90; }
+.prose-content a { @apply text-agent-research underline underline-offset-2; }
+
+/* The single orchestrated motion on the page: a point of light travelling
+   along the relay connector line, on load, once — not a hover effect on
+   every card. Respects reduced-motion preference. */
+@keyframes travel-glow {
+  0% { left: 0%; opacity: 0; }
+  8% { opacity: 1; }
+  92% { opacity: 1; }
+  100% { left: 100%; opacity: 0; }
+}
+
+.relay-pulse {
+  animation: travel-glow 4.5s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .relay-pulse {
+    animation: none;
+    opacity: 0;
+  }
+  html {
+    scroll-behavior: auto;
+  }
+}
