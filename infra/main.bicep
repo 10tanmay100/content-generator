@@ -18,6 +18,9 @@ param environmentName string = 'dev'
 @description('Azure region for all resources')
 param location string = resourceGroup().location
 
+@description('Azure region for Cosmos DB specifically — independent from the main location, since Cosmos DB serverless account creation can be capacity-restricted per subscription per region, and a working region may differ from where your other resources live')
+param cosmosLocation string = 'westus2'
+
 @description('Container image for the backend API (e.g. myregistry.azurecr.io/content-backend:latest)')
 param backendImage string = 'mcr.microsoft.com/k8se/quickstart:latest'
 
@@ -54,7 +57,7 @@ module cosmos 'modules/cosmosdb.bicep' = {
   name: 'cosmosDeploy'
   params: {
     namePrefix: namePrefix
-    location: location
+    location: cosmosLocation
     tags: tags
   }
 }

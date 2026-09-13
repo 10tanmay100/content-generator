@@ -4,7 +4,8 @@
   "parameters": {
     "projectName": { "value": "contentpipe" },
     "environmentName": { "value": "dev" },
-    "location": { "value": "eastus" },
+    "location": { "value": "southindia" },
+    "cosmosLocation": { "value": "westus2" },
     "backendImage": { "value": "<acr-name>.azurecr.io/content-backend:latest" },
     "frontendImage": { "value": "<acr-name>.azurecr.io/content-frontend:latest" },
     "ollamaModel": { "value": "llama3.1:8b" },
