@@ -83,21 +83,52 @@ jobs:
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
-      - name: Build & push backend image (ACR Tasks — no Docker login needed)
+      # ACR Tasks (`az acr build`) is blocked on Free Trial / student Azure
+      # subscriptions with "TasksOperationsNotAllowed" — a subscription-tier
+      # restriction, not a permissions issue. Building with plain Docker and
+      # pushing directly works on any subscription tier, so that's used here
+      # instead. If you're on Pay-As-You-Go and prefer ACR Tasks (it can be
+      # marginally simpler), swap these steps back to `az acr build`.
+      - name: Fetch ACR admin credentials
+        id: acr-creds
         run: |
-          az acr build \
-            --registry ${{ env.ACR_NAME }} \
-            --image ${{ env.BACKEND_REPO }}:${{ steps.vars.outputs.image_tag }} \
-            --image ${{ env.BACKEND_REPO }}:latest \
-            ./backend
+          USERNAME=$(az acr credential show --name ${{ env.ACR_NAME }} --query username -o tsv)
+          PASSWORD=$(az acr credential show --name ${{ env.ACR_NAME }} --query "passwords[0].value" -o tsv)
+          echo "::add-mask::$PASSWORD"
+          echo "username=$USERNAME" >> "$GITHUB_OUTPUT"
+          echo "password=$PASSWORD" >> "$GITHUB_OUTPUT"
+
+      - name: Log in to ACR via Docker
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.ACR_NAME }}.azurecr.io
+          username: ${{ steps.acr-creds.outputs.username }}
+          password: ${{ steps.acr-creds.outputs.password }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build & push backend image
+        uses: docker/build-push-action@v6
+        with:
+          context: ./backend
+          push: true
+          tags: |
+            ${{ env.ACR_NAME }}.azurecr.io/${{ env.BACKEND_REPO }}:${{ steps.vars.outputs.image_tag }}
+            ${{ env.ACR_NAME }}.azurecr.io/${{ env.BACKEND_REPO }}:latest
+          cache-from: type=gha,scope=backend
+          cache-to: type=gha,mode=max,scope=backend
 
       - name: Build & push frontend image
-        run: |
-          az acr build \
-            --registry ${{ env.ACR_NAME }} \
-            --image ${{ env.FRONTEND_REPO }}:${{ steps.vars.outputs.image_tag }} \
-            --image ${{ env.FRONTEND_REPO }}:latest \
-            ./frontend
+        uses: docker/build-push-action@v6
+        with:
+          context: ./frontend
+          push: true
+          tags: |
+            ${{ env.ACR_NAME }}.azurecr.io/${{ env.FRONTEND_REPO }}:${{ steps.vars.outputs.image_tag }}
+            ${{ env.ACR_NAME }}.azurecr.io/${{ env.FRONTEND_REPO }}:latest
+          cache-from: type=gha,scope=frontend
+          cache-to: type=gha,mode=max,scope=frontend
 
   # --------------------------------------------------------------------------
   deploy-infra:
