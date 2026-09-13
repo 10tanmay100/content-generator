@@ -181,6 +181,10 @@ jobs:
           reconcile "contentpipe-dev-law" "Microsoft.OperationalInsights/workspaces" "$DESIRED_LOCATION"
           reconcile "contentpipedevcosmos" "Microsoft.DocumentDB/databaseAccounts" "$DESIRED_COSMOS_LOCATION"
           reconcile "contentpipedevsearch" "Microsoft.Search/searchServices" "$DESIRED_LOCATION"
+          reconcile "contentpipe-dev-law" "Microsoft.OperationalInsights/workspaces" "$DESIRED_LOCATION"
+          reconcile "contentpipe-dev-appinsights" "Microsoft.Insights/components" "$DESIRED_LOCATION"
+          reconcile "contentpipedevcosmos" "Microsoft.DocumentDB/databaseAccounts" "$DESIRED_COSMOS_LOCATION"
+          reconcile "contentpipedevsearch" "Microsoft.Search/searchServices" "$DESIRED_LOCATION"
 
       - name: Deploy Bicep template
         run: |
