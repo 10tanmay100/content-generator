@@ -25,6 +25,34 @@ RESOURCE_GROUP="rg-content-pipeline-dev"
 ACR_NAME="contentpipedevacr"
 APP_NAME="content-pipeline-github-oidc"
 
+# --- Resource providers -------------------------------------------------------
+# On newer/free-tier subscriptions these namespaces often aren't registered
+# until the first time something tries to use them, which is exactly the
+# MissingSubscriptionRegistration error this avoids. Registering is async and
+# idempotent — safe to call every run, and a no-op once already registered.
+echo "==> Registering required resource providers (safe to re-run, no-op if already done)"
+for NAMESPACE in Microsoft.ContainerRegistry Microsoft.App Microsoft.OperationalInsights \
+                 Microsoft.Insights Microsoft.DocumentDB Microsoft.Search Microsoft.Storage; do
+  STATE=$(az provider show --namespace "$NAMESPACE" --query registrationState -o tsv 2>/dev/null || echo "NotRegistered")
+  if [ "$STATE" == "Registered" ]; then
+    echo "    $NAMESPACE: already registered"
+  else
+    echo "    $NAMESPACE: registering..."
+    az provider register --namespace "$NAMESPACE" --output none
+  fi
+done
+
+echo "    Waiting for registration to finish (usually under a minute)..."
+for NAMESPACE in Microsoft.ContainerRegistry Microsoft.App Microsoft.OperationalInsights \
+                 Microsoft.Insights Microsoft.DocumentDB Microsoft.Search Microsoft.Storage; do
+  for i in $(seq 1 30); do
+    STATE=$(az provider show --namespace "$NAMESPACE" --query registrationState -o tsv)
+    [ "$STATE" == "Registered" ] && break
+    sleep 5
+  done
+  echo "    $NAMESPACE: $STATE"
+done
+
 # --- Resource group ---------------------------------------------------------
 echo "==> Resource group: $RESOURCE_GROUP"
 if az group show --name "$RESOURCE_GROUP" &>/dev/null; then
@@ -96,6 +124,14 @@ else
 fi
 
 # --- Federated credentials -----------------------------------------------------
+# GitHub changed its default OIDC subject format for repos created/renamed on
+# or after July 15, 2026: newer repos embed immutable numeric owner/repo IDs
+# ("repo:OWNER@OWNER_ID/REPO@REPO_ID:...") instead of just names, to prevent
+# subject recycling if a repo/org name is later reused by someone else. Older
+# repos may still use the plain-name format. Rather than detect which one
+# applies, this creates federated credentials for BOTH formats — unused ones
+# are simply inert, and this way it works regardless of when the repo was
+# created or whether GitHub changes the default again later.
 create_federated_credential() {
   local cred_name="$1"
   local subject="$2"
@@ -115,11 +151,33 @@ create_federated_credential() {
   fi
 }
 
-echo "==> Federated credential: pushes to main"
+echo "==> Federated credentials: pushes to main (name-based format)"
 create_federated_credential "github-main-branch" "repo:${GITHUB_ORG}/${GITHUB_REPO}:ref:refs/heads/main"
 
-echo "==> Federated credential: 'production' GitHub Environment"
+echo "==> Federated credentials: 'production' GitHub Environment (name-based format)"
 create_federated_credential "github-production-environment" "repo:${GITHUB_ORG}/${GITHUB_REPO}:environment:production"
+
+echo "==> Looking up immutable owner/repo IDs from the GitHub API (for repos on the new subject format)"
+REPO_JSON=$(curl -sf "https://api.github.com/repos/${GITHUB_ORG}/${GITHUB_REPO}" || true)
+if [ -n "$REPO_JSON" ] && echo "$REPO_JSON" | python3 -c "import json,sys; json.load(sys.stdin)['id']" &>/dev/null; then
+  OWNER_ID=$(echo "$REPO_JSON" | python3 -c "import json,sys; print(json.load(sys.stdin)['owner']['id'])")
+  REPO_ID=$(echo "$REPO_JSON" | python3 -c "import json,sys; print(json.load(sys.stdin)['id'])")
+  echo "    Found owner_id=$OWNER_ID repo_id=$REPO_ID"
+
+  echo "==> Federated credentials: pushes to main (immutable-ID format)"
+  create_federated_credential "github-main-branch-immutable" \
+    "repo:${GITHUB_ORG}@${OWNER_ID}/${GITHUB_REPO}@${REPO_ID}:ref:refs/heads/main"
+
+  echo "==> Federated credentials: 'production' GitHub Environment (immutable-ID format)"
+  create_federated_credential "github-production-environment-immutable" \
+    "repo:${GITHUB_ORG}@${OWNER_ID}/${GITHUB_REPO}@${REPO_ID}:environment:production"
+else
+  echo "    Couldn't fetch repo info from the public GitHub API (private repo, rate limit, or"
+  echo "    typo in org/repo name). If your workflow later fails with 'No matching federated"
+  echo "    identity record found', the error message shows the exact subject GitHub sent —"
+  echo "    copy the owner_id/repo_id numbers from it and re-run this script, or add the"
+  echo "    federated credential manually using those values."
+fi
 
 # --- Summary ---------------------------------------------------------------
 echo ""
