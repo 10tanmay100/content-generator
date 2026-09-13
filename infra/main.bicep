@@ -21,6 +21,9 @@ param location string = resourceGroup().location
 @description('Azure region for Cosmos DB specifically — independent from the main location, since Cosmos DB serverless account creation can be capacity-restricted per subscription per region, and a working region may differ from where your other resources live')
 param cosmosLocation string = 'westus2'
 
+@description('Azure region for Azure AI Search specifically — independent from the main location, since Semantic Search is only available in a subset of regions (South India is not one of them)')
+param searchLocation string = 'westus2'
+
 @description('Container image for the backend API (e.g. myregistry.azurecr.io/content-backend:latest)')
 param backendImage string = 'mcr.microsoft.com/k8se/quickstart:latest'
 
@@ -66,7 +69,7 @@ module search 'modules/aisearch.bicep' = {
   name: 'searchDeploy'
   params: {
     namePrefix: namePrefix
-    location: location
+    location: searchLocation
     tags: tags
   }
 }
