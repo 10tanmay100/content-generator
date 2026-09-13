@@ -145,6 +145,43 @@ jobs:
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
+      # A resource's Azure region is immutable once created — ARM's normal
+      # idempotent create-or-update can't reconcile a location change, it
+      # just fails with a cryptic "InvalidResourceLocation" conflict. This
+      # checks each region-sensitive resource's ACTUAL location against
+      # what infra/parameters.json currently specifies, and only deletes
+      # (so the next step recreates it fresh in the right place) when
+      # there's a genuine mismatch. Resources already in the right place
+      # are never touched.
+      - name: Reconcile resource regions (delete only on genuine mismatch)
+        run: |
+          DESIRED_LOCATION=$(python3 -c "import json; print(json.load(open('infra/parameters.json'))['parameters']['location']['value'])")
+          DESIRED_COSMOS_LOCATION=$(python3 -c "
+          import json
+          p = json.load(open('infra/parameters.json'))['parameters']
+          print(p.get('cosmosLocation', {}).get('value', p['location']['value']))
+          ")
+          echo "Desired location: $DESIRED_LOCATION | Desired Cosmos location: $DESIRED_COSMOS_LOCATION"
+
+          reconcile() {
+            local name="$1" rtype="$2" desired="$3"
+            local current
+            current=$(az resource show --resource-group ${{ env.RESOURCE_GROUP }} --name "$name" \
+              --resource-type "$rtype" --query location -o tsv 2>/dev/null || true)
+            if [ -z "$current" ]; then
+              echo "  $name: doesn't exist yet — will be created fresh in $desired"
+            elif [ "$current" == "$desired" ]; then
+              echo "  $name: already correct ($current) — leaving as-is"
+            else
+              echo "  $name: exists in '$current', need '$desired' (regions are immutable) — deleting so it's recreated correctly"
+              az resource delete --resource-group ${{ env.RESOURCE_GROUP }} --name "$name" --resource-type "$rtype"
+            fi
+          }
+
+          reconcile "contentpipe-dev-law" "Microsoft.OperationalInsights/workspaces" "$DESIRED_LOCATION"
+          reconcile "contentpipedevcosmos" "Microsoft.DocumentDB/databaseAccounts" "$DESIRED_COSMOS_LOCATION"
+          reconcile "contentpipedevsearch" "Microsoft.Search/searchServices" "$DESIRED_LOCATION"
+
       - name: Deploy Bicep template
         run: |
           az deployment group create \
