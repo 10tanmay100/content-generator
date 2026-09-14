@@ -99,3 +99,4 @@ output frontendUrl string = containerApps.outputs.frontendFqdn
 output ollamaUrl string = containerApps.outputs.ollamaFqdn
 output cosmosAccountName string = cosmos.outputs.cosmosAccountName
 output searchServiceName string = search.outputs.searchServiceName
+
