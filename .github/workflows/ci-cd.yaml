@@ -289,7 +289,12 @@ jobs:
       # step allows a generous timeout on top of the health check above.
       - name: Generate real content through the deployed API (exercises Ollama end-to-end)
         run: |
-          RESPONSE=$(curl -sf --max-time 900 \
+          # No -f here deliberately: with -f, curl swallows the response
+          # body on any non-2xx status, making failures undiagnosable (that
+          # cost a full round-trip last time). Capture the status code and
+          # body separately instead, so a failure always shows exactly what
+          # the backend actually said.
+          HTTP_STATUS=$(curl -s --max-time 900 -o /tmp/response.json -w "%{http_code}" \
             -X POST "${{ steps.url.outputs.backend_url }}/api/v1/content/generate/sync" \
             -H "Authorization: Bearer ${{ secrets.API_AUTH_TOKEN }}" \
             -H "Content-Type: application/json" \
@@ -301,10 +306,12 @@ jobs:
               "generate_social_variants": false
             }')
 
-          echo "$RESPONSE" | head -c 500
+          echo "HTTP status: $HTTP_STATUS"
+          echo "Response body:"
+          cat /tmp/response.json
           echo ""
 
-          if echo "$RESPONSE" | grep -q '"body_markdown"'; then
+          if [ "$HTTP_STATUS" == "200" ] && grep -q '"body_markdown"' /tmp/response.json; then
             echo "Smoke test passed: received a real generated article from the deployed pipeline."
           else
             echo "::error::Smoke test failed: response did not contain a generated article."

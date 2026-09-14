@@ -50,7 +50,7 @@ class Settings(BaseSettings):
     # Optional: swap in a paid provider later without touching agent code
     openai_api_key: str = Field(default="", alias="OPENAI_API_KEY")
     stability_api_key: str = Field(default="", alias="STABILITY_API_KEY")
-
+    ollama_model_reasoning: str = Field(default="deepseek-r1:14b", alias="OLLAMA_MODEL_REASONING")
     # Auth
     api_auth_token: str = Field(default="change-me-local-dev-token", alias="API_AUTH_TOKEN")
 
