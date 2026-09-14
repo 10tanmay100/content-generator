@@ -3,7 +3,10 @@ from datetime import datetime
 from uuid import uuid4
 
 from fastapi import APIRouter, BackgroundTasks, Depends, status
-
+"""Content generation endpoints: kick off crew jobs and fetch results."""
+import asyncio
+from datetime import datetime
+from uuid import uuid4
 from app.api.deps import get_cosmos
 from app.core.exceptions import CrewExecutionError, JobNotFoundError
 from app.core.logging import get_logger
@@ -111,7 +114,7 @@ async def generate_content_sync(request: ContentGenerationRequest) -> dict:
     """
     try:
         crew = ContentCrew(request)
-        result = crew.run()
+        result = await asyncio.to_thread(crew.run)
         return {"status": JobStatus.COMPLETED.value, "result": result}
     except Exception as exc:
         logger.error("sync_generation_failed", error=str(exc), exc_info=True)
