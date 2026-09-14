@@ -161,7 +161,12 @@ jobs:
           p = json.load(open('infra/parameters.json'))['parameters']
           print(p.get('cosmosLocation', {}).get('value', p['location']['value']))
           ")
-          echo "Desired location: $DESIRED_LOCATION | Desired Cosmos location: $DESIRED_COSMOS_LOCATION"
+          DESIRED_SEARCH_LOCATION=$(python3 -c "
+          import json
+          p = json.load(open('infra/parameters.json'))['parameters']
+          print(p.get('searchLocation', {}).get('value', p['location']['value']))
+          ")
+          echo "Desired location: $DESIRED_LOCATION | Cosmos: $DESIRED_COSMOS_LOCATION | Search: $DESIRED_SEARCH_LOCATION"
 
           reconcile() {
             local name="$1" rtype="$2" desired="$3"
@@ -175,16 +180,26 @@ jobs:
             else
               echo "  $name: exists in '$current', need '$desired' (regions are immutable) — deleting so it's recreated correctly"
               az resource delete --resource-group ${{ env.RESOURCE_GROUP }} --name "$name" --resource-type "$rtype"
+              # Deletion is async — some services (Azure AI Search especially)
+              # reject a same-named create while the old one is still being
+              # torn down in the background ("ServiceDeleting"). Poll until
+              # it's genuinely gone instead of racing the next step.
+              echo "  $name: waiting for deletion to fully complete..."
+              for _ in $(seq 1 40); do
+                if ! az resource show --resource-group ${{ env.RESOURCE_GROUP }} --name "$name" \
+                  --resource-type "$rtype" &>/dev/null; then
+                  echo "  $name: confirmed deleted."
+                  break
+                fi
+                sleep 15
+              done
             fi
           }
 
           reconcile "contentpipe-dev-law" "Microsoft.OperationalInsights/workspaces" "$DESIRED_LOCATION"
-          reconcile "contentpipedevcosmos" "Microsoft.DocumentDB/databaseAccounts" "$DESIRED_COSMOS_LOCATION"
-          reconcile "contentpipedevsearch" "Microsoft.Search/searchServices" "$DESIRED_LOCATION"
-          reconcile "contentpipe-dev-law" "Microsoft.OperationalInsights/workspaces" "$DESIRED_LOCATION"
           reconcile "contentpipe-dev-appinsights" "Microsoft.Insights/components" "$DESIRED_LOCATION"
           reconcile "contentpipedevcosmos" "Microsoft.DocumentDB/databaseAccounts" "$DESIRED_COSMOS_LOCATION"
-          reconcile "contentpipedevsearch" "Microsoft.Search/searchServices" "$DESIRED_LOCATION"
+          reconcile "contentpipedevsearch" "Microsoft.Search/searchServices" "$DESIRED_SEARCH_LOCATION"
 
       - name: Deploy Bicep template
         run: |
