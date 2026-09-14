@@ -153,8 +153,14 @@ jobs:
       # (so the next step recreates it fresh in the right place) when
       # there's a genuine mismatch. Resources already in the right place
       # are never touched.
-      - name: Reconcile resource regions (delete only on genuine mismatch)
+      - name: Deploy Bicep template
         run: |
+          # Resolve the ACTUAL location to deploy each region-sensitive
+          # resource to. If it already exists, use wherever it already is —
+          # Bicep/ARM treats a matching location as a harmless no-op update,
+          # so there's nothing to delete or wait on. Only fall back to the
+          # configured default when the resource doesn't exist yet, so it
+          # gets created fresh in the intended region.
           DESIRED_LOCATION=$(python3 -c "import json; print(json.load(open('infra/parameters.json'))['parameters']['location']['value'])")
           DESIRED_COSMOS_LOCATION=$(python3 -c "
           import json
@@ -166,48 +172,38 @@ jobs:
           p = json.load(open('infra/parameters.json'))['parameters']
           print(p.get('searchLocation', {}).get('value', p['location']['value']))
           ")
-          echo "Desired location: $DESIRED_LOCATION | Cosmos: $DESIRED_COSMOS_LOCATION | Search: $DESIRED_SEARCH_LOCATION"
 
-          reconcile() {
+          effective_location() {
             local name="$1" rtype="$2" desired="$3"
             local current
             current=$(az resource show --resource-group ${{ env.RESOURCE_GROUP }} --name "$name" \
               --resource-type "$rtype" --query location -o tsv 2>/dev/null || true)
-            if [ -z "$current" ]; then
-              echo "  $name: doesn't exist yet — will be created fresh in $desired"
-            elif [ "$current" == "$desired" ]; then
-              echo "  $name: already correct ($current) — leaving as-is"
+            if [ -n "$current" ]; then
+              echo "  $name: already exists in '$current' — using that (no delete, no recreate)" >&2
+              echo "$current"
             else
-              echo "  $name: exists in '$current', need '$desired' (regions are immutable) — deleting so it's recreated correctly"
-              az resource delete --resource-group ${{ env.RESOURCE_GROUP }} --name "$name" --resource-type "$rtype"
-              # Deletion is async — some services (Azure AI Search especially)
-              # reject a same-named create while the old one is still being
-              # torn down in the background ("ServiceDeleting"). Poll until
-              # it's genuinely gone instead of racing the next step.
-              echo "  $name: waiting for deletion to fully complete..."
-              for _ in $(seq 1 40); do
-                if ! az resource show --resource-group ${{ env.RESOURCE_GROUP }} --name "$name" \
-                  --resource-type "$rtype" &>/dev/null; then
-                  echo "  $name: confirmed deleted."
-                  break
-                fi
-                sleep 15
-              done
+              echo "  $name: doesn't exist yet — will be created fresh in '$desired'" >&2
+              echo "$desired"
             fi
           }
 
-          reconcile "contentpipe-dev-law" "Microsoft.OperationalInsights/workspaces" "$DESIRED_LOCATION"
-          reconcile "contentpipe-dev-appinsights" "Microsoft.Insights/components" "$DESIRED_LOCATION"
-          reconcile "contentpipedevcosmos" "Microsoft.DocumentDB/databaseAccounts" "$DESIRED_COSMOS_LOCATION"
-          reconcile "contentpipedevsearch" "Microsoft.Search/searchServices" "$DESIRED_SEARCH_LOCATION"
+          # Log Analytics and App Insights are always created together by the
+          # same monitor.bicep module call, so checking Log Analytics alone
+          # is enough to know where both of them already live.
+          EFFECTIVE_LOCATION=$(effective_location "contentpipe-dev-law" "Microsoft.OperationalInsights/workspaces" "$DESIRED_LOCATION")
+          EFFECTIVE_COSMOS_LOCATION=$(effective_location "contentpipedevcosmos" "Microsoft.DocumentDB/databaseAccounts" "$DESIRED_COSMOS_LOCATION")
+          EFFECTIVE_SEARCH_LOCATION=$(effective_location "contentpipedevsearch" "Microsoft.Search/searchServices" "$DESIRED_SEARCH_LOCATION")
 
-      - name: Deploy Bicep template
-        run: |
+          echo "Deploying with location=$EFFECTIVE_LOCATION cosmosLocation=$EFFECTIVE_COSMOS_LOCATION searchLocation=$EFFECTIVE_SEARCH_LOCATION"
+
           az deployment group create \
             --resource-group ${{ env.RESOURCE_GROUP }} \
             --template-file infra/main.bicep \
             --parameters infra/parameters.json \
             --parameters \
+              location="$EFFECTIVE_LOCATION" \
+              cosmosLocation="$EFFECTIVE_COSMOS_LOCATION" \
+              searchLocation="$EFFECTIVE_SEARCH_LOCATION" \
               backendImage=${{ env.ACR_NAME }}.azurecr.io/${{ env.BACKEND_REPO }}:${{ needs.build-and-push.outputs.image-tag }} \
               frontendImage=${{ env.ACR_NAME }}.azurecr.io/${{ env.FRONTEND_REPO }}:${{ needs.build-and-push.outputs.image-tag }} \
               apiAuthToken=${{ secrets.API_AUTH_TOKEN }}

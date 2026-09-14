@@ -111,7 +111,17 @@ resource ollamaApp 'Microsoft.App/containerApps@2024-03-01' = {
         {
           name: 'ollama'
           image: 'ollama/ollama:latest'
-          resources: { cpu: json('4.0'), memory: '8Gi' }
+          // Consumption-plan Container Apps only allow fixed CPU:memory
+          // ratio combos, capped at 2.0 vCPU / 4.0Gi memory (no Dedicated/
+          // Workload-Profile environment configured here). This is tight
+          // for two 8B models, but Ollama unloads idle models automatically,
+          // so it should be workable as long as they're not needed
+          // concurrently. If you hit OOM/crashes at runtime, the real fix
+          // is switching this environment to a Workload Profile (Dedicated
+          // D-series) for much larger CPU/memory ceilings — a bigger change
+          // than swapping this one number, so flagging rather than doing
+          // it preemptively.
+          resources: { cpu: json('2.0'), memory: '4Gi' }
           command: ['/bin/sh', '-c']
           args: [
             'ollama serve & sleep 5 && ollama pull ${ollamaModel} && ollama pull ${ollamaModelReasoning} && wait'
