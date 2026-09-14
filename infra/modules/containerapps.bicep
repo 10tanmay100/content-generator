@@ -76,6 +76,26 @@ resource containerAppEnv 'Microsoft.App/managedEnvironments@2024-03-01' = {
         sharedKey: logAnalytics.listKeys().primarySharedKey
       }
     }
+    // Workload-profiles-v2 environment: keeps the default Consumption
+    // profile (backend, frontend, and everything else stay pay-per-use)
+    // and adds one Dedicated D4 node (4 vCPU / 16GB) exclusively for
+    // Ollama, which was consistently crash-looping under Consumption's
+    // hard 4GB ceiling — no 8B-class model reliably fit in it. Only
+    // Ollama moves to this Dedicated profile; nothing else changes cost
+    // shape. minimumCount/maximumCount pinned to 1 (no autoscaling) since
+    // this is a single internal LLM service, not a bursty public workload.
+    workloadProfiles: [
+      {
+        name: 'Consumption'
+        workloadProfileType: 'Consumption'
+      }
+      {
+        name: 'ollama-dedicated'
+        workloadProfileType: 'D4'
+        minimumCount: 1
+        maximumCount: 1
+      }
+    ]
   }
 }
 
@@ -99,6 +119,7 @@ resource ollamaApp 'Microsoft.App/containerApps@2024-03-01' = {
   tags: tags
   properties: {
     managedEnvironmentId: containerAppEnv.id
+    workloadProfileName: 'ollama-dedicated'
     configuration: {
       ingress: {
         external: false
@@ -111,17 +132,14 @@ resource ollamaApp 'Microsoft.App/containerApps@2024-03-01' = {
         {
           name: 'ollama'
           image: 'ollama/ollama:latest'
-          // Consumption-plan Container Apps only allow fixed CPU:memory
-          // ratio combos, capped at 2.0 vCPU / 4.0Gi memory (no Dedicated/
-          // Workload-Profile environment configured here). This is tight
-          // for two 8B models, but Ollama unloads idle models automatically,
-          // so it should be workable as long as they're not needed
-          // concurrently. If you hit OOM/crashes at runtime, the real fix
-          // is switching this environment to a Workload Profile (Dedicated
-          // D-series) for much larger CPU/memory ceilings — a bigger change
-          // than swapping this one number, so flagging rather than doing
-          // it preemptively.
-          resources: { cpu: json('2.0'), memory: '4Gi' }
+          // Running on the 'ollama-dedicated' D4 profile (4 vCPU / 16GB
+          // node) instead of Consumption, which was consistently
+          // crash-looping trying to load even a single 8B model within its
+          // hard 4GB ceiling. Dedicated profiles aren't restricted to
+          // Consumption's fixed cpu:memory ratio table, so this requests
+          // most of the node's capacity, leaving a couple GB of headroom
+          // for the OS/platform rather than requesting the exact full 16Gi.
+          resources: { cpu: json('4.0'), memory: '14Gi' }
           command: ['/bin/sh', '-c']
           args: [
             'ollama serve & sleep 5 && ollama pull ${ollamaModel} && ollama pull ${ollamaModelReasoning} && wait'
@@ -153,6 +171,7 @@ resource backendApp 'Microsoft.App/containerApps@2024-03-01' = {
   tags: tags
   properties: {
     managedEnvironmentId: containerAppEnv.id
+    workloadProfileName: 'Consumption'
     configuration: {
       ingress: {
         external: true
@@ -228,6 +247,7 @@ resource frontendApp 'Microsoft.App/containerApps@2024-03-01' = {
   tags: tags
   properties: {
     managedEnvironmentId: containerAppEnv.id
+    workloadProfileName: 'Consumption'
     configuration: {
       ingress: {
         external: true
