@@ -35,11 +35,11 @@ def test_image_prompt_tool_returns_prompt_and_alt_text(tmp_path, monkeypatch):
     assert list(tmp_path.iterdir()), "expected an image file to be saved"
 
 
-@patch("app.agents.research_agent.get_tool_llm")
+@patch("app.agents.research_agent.get_llm")
 def test_research_agent_builds_with_mocked_llm(mock_llm):
     from app.agents.research_agent import build_research_agent
 
-    mock_llm.return_value = "ollama_chat/llama3.2:latest"
+    mock_llm.return_value = "anthropic/claude-sonnet-5"
     agent = build_research_agent()
     assert agent.role == "Senior Content Research Analyst"
     assert len(agent.tools) == 1

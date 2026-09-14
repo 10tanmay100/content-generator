@@ -6,16 +6,14 @@ ContentCrew: orchestrates the content creation pipeline in phases:
   4. Image generation                    (deterministic Python, no LLM)
   5. Social repurposing (optional)       (LLM, no tools)
 
-Design note: earlier versions ran SEO analysis and image generation as
-LLM-agent tool calls. In practice, local Ollama models — especially smaller
-ones — are not reliable at structured function-calling: a model can emit a
-tool-call attempt as plain hallucinated text (sometimes with invented
-parameters) instead of the tool actually executing, corrupting the final
-output. Since both of these steps are deterministic (same inputs always
-produce the same kind of result), they're now called directly in Python and
-their results are handed to the LLM as plain text context. Only Research
-still needs live tool-calling, since deciding *what* to search for requires
-judgment a fixed Python call can't provide.
+# CrewAI + LLM (Anthropic / Claude)
+# Note: crewai-tools is intentionally NOT included — this project uses its own
+# lightweight custom tools (app/tools/*) built on crewai.tools.BaseTool.
+# crewai.LLM(model="anthropic/<model>") uses CrewAI's native Anthropic
+# provider, which requires the `anthropic` SDK directly (not just litellm).
+crewai==1.15.21
+litellm>=1.44.22
+anthropic>=0.40.0
 """
 import re
 import time

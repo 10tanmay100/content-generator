@@ -1,7 +1,7 @@
 """Content Writing Agent: long-form drafting, tone adaptation, structure."""
 from crewai import Agent
 
-from app.services.llm_service import get_writing_llm
+from app.services.llm_service import get_llm
 
 
 def build_writing_agent() -> Agent:
@@ -16,7 +16,7 @@ def build_writing_agent() -> Agent:
             "and business blogs. You write in clear, active prose, use varied sentence "
             "structure, and always organize content with clear headings."
         ),
-        llm=get_writing_llm(),
+        llm=get_llm(),
         verbose=True,
         allow_delegation=False,
         max_iter=6,

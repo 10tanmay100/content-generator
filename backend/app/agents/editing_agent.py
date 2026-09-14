@@ -1,7 +1,7 @@
 """Content Editing Agent: grammar, clarity, consistency, fact-check pass."""
 from crewai import Agent
 
-from app.services.llm_service import get_writing_llm
+from app.services.llm_service import get_llm
 
 
 def build_editing_agent() -> Agent:
@@ -16,7 +16,7 @@ def build_editing_agent() -> Agent:
             "You catch inconsistencies, awkward phrasing, and unsupported claims, and you "
             "tighten prose without losing the author's voice."
         ),
-        llm=get_writing_llm(),
+        llm=get_llm(),
         verbose=True,
         allow_delegation=False,
         max_iter=5,

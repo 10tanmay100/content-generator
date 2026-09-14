@@ -20,11 +20,10 @@ class Settings(BaseSettings):
     log_level: str = Field(default="INFO", alias="LOG_LEVEL")
     cors_origins: str = Field(default="http://localhost:3000", alias="CORS_ORIGINS")
 
-    # Ollama (local LLM)
-    ollama_base_url: str = Field(default="http://localhost:11434", alias="OLLAMA_BASE_URL")
-    ollama_model: str = Field(default="llama3.2:latest", alias="OLLAMA_MODEL")
-    ollama_model_reasoning: str = Field(default="deepseek-r1:8b", alias="OLLAMA_MODEL_REASONING")
-    ollama_temperature: float = Field(default=0.6, alias="OLLAMA_TEMPERATURE")
+    # Anthropic (Claude Sonnet)
+    anthropic_api_key: str = Field(default="", alias="ANTHROPIC_API_KEY")
+    anthropic_model: str = Field(default="claude-sonnet-5", alias="ANTHROPIC_MODEL")
+    anthropic_temperature: float = Field(default=0.6, alias="ANTHROPIC_TEMPERATURE")
 
     # Cosmos DB
     cosmos_endpoint: str = Field(default="", alias="COSMOS_ENDPOINT")
@@ -50,6 +49,7 @@ class Settings(BaseSettings):
     # Optional: swap in a paid provider later without touching agent code
     openai_api_key: str = Field(default="", alias="OPENAI_API_KEY")
     stability_api_key: str = Field(default="", alias="STABILITY_API_KEY")
+
     # Auth
     api_auth_token: str = Field(default="change-me-local-dev-token", alias="API_AUTH_TOKEN")
 
