@@ -1,101 +1,269 @@
-// ============================================================================
-// Main orchestrator: deploys the full CrewAI content pipeline infra on Azure
-//   - Container Apps environment (backend API + optional frontend)
-//   - Cosmos DB (jobs + content)
-//   - Azure AI Search (vector/semantic)
-//   - Log Analytics + Application Insights (Azure Monitor)
-//   - Azure Container Registry
-// ============================================================================
-targetScope = 'resourceGroup'
+// Azure Container Apps environment + Ollama (local LLM server), backend
+// (FastAPI), and frontend (Next.js) apps.
+//
+// Ollama runs as its own internal-only Container App in this environment so
+// the backend can reach it the same way it reaches localhost:11434 in dev —
+// just over the environment's internal network instead. Pulled models
+// persist on an Azure Files share so they aren't re-downloaded on every
+// restart/revision.
+//
+// IMPORTANT: this runs Ollama on CPU (no GPU workload profile configured).
+// An 8B model on CPU is noticeably slower than on a local GPU/Apple Silicon
+// machine — expect a full 6-agent run to take several minutes longer in
+// Azure than it does locally. If that's not acceptable, look into Azure
+// Container Apps GPU workload profiles (region-limited, costs more) or
+// swap the backend to a hosted LLM API for the cloud deployment only.
+param namePrefix string
+param location string
+param tags object
 
-@description('Short project name used as a resource-name prefix')
-param projectName string = 'contentpipe'
-
-@description('Deployment environment')
-@allowed(['dev', 'staging', 'prod'])
-param environmentName string = 'dev'
-
-@description('Azure region for all resources')
-param location string = resourceGroup().location
-
-@description('Azure region for Cosmos DB specifically — independent from the main location, since Cosmos DB serverless account creation can be capacity-restricted per subscription per region, and a working region may differ from where your other resources live')
-param cosmosLocation string = 'westus2'
-
-@description('Azure region for Azure AI Search specifically — independent from the main location, since Semantic Search is only available in a subset of regions (South India is not one of them)')
-param searchLocation string = 'westus2'
-
-@description('Container image for the backend API (e.g. myregistry.azurecr.io/content-backend:latest)')
-param backendImage string = 'mcr.microsoft.com/k8se/quickstart:latest'
-
-@description('Container image for the frontend (Next.js)')
-param frontendImage string = 'mcr.microsoft.com/k8se/quickstart:latest'
-
-@description('Ollama tool-calling model, pulled automatically on first Ollama container start')
-param ollamaModel string = 'llama3.1:8b'
-
-@description('Ollama writing/reasoning model, pulled automatically on first Ollama container start')
-param ollamaModelReasoning string = 'deepseek-r1:8b'
-
+param backendImage string
+param frontendImage string
+param logAnalyticsWorkspaceId string
+param appInsightsConnectionString string
+param cosmosEndpoint string
 @secure()
-@description('Shared bearer token the frontend uses to call the backend API')
+param cosmosKey string
+param searchEndpoint string
+@secure()
+param searchKey string
+param ollamaModel string = 'llama3.1:8b'
+param ollamaModelReasoning string = 'deepseek-r1:8b'
+@secure()
 param apiAuthToken string
 
-var namePrefix = '${projectName}-${environmentName}'
-var tags = {
-  project: projectName
-  environment: environmentName
-  managedBy: 'bicep'
+resource logAnalytics 'Microsoft.OperationalInsights/workspaces@2023-09-01' existing = {
+  name: last(split(logAnalyticsWorkspaceId, '/'))
 }
 
-module monitor 'modules/monitor.bicep' = {
-  name: 'monitorDeploy'
-  params: {
-    namePrefix: namePrefix
-    location: location
-    tags: tags
+resource acr 'Microsoft.ContainerRegistry/registries@2023-11-01-preview' = {
+  name: toLower(replace('${namePrefix}acr', '-', ''))
+  location: location
+  tags: tags
+  sku: { name: 'Basic' }
+  properties: { adminUserEnabled: true }
+}
+
+// --- Persistent storage for pulled Ollama models --------------------------
+resource storageAccount 'Microsoft.Storage/storageAccounts@2023-01-01' = {
+  name: toLower(replace('${namePrefix}ollamasa', '-', ''))
+  location: location
+  tags: tags
+  sku: { name: 'Standard_LRS' }
+  kind: 'StorageV2'
+}
+
+resource fileService 'Microsoft.Storage/storageAccounts/fileServices@2023-01-01' = {
+  parent: storageAccount
+  name: 'default'
+}
+
+resource ollamaShare 'Microsoft.Storage/storageAccounts/fileServices/shares@2023-01-01' = {
+  parent: fileService
+  name: 'ollama-models'
+  properties: { shareQuota: 100 }
+}
+
+resource containerAppEnv 'Microsoft.App/managedEnvironments@2024-03-01' = {
+  name: '${namePrefix}-env'
+  location: location
+  tags: tags
+  properties: {
+    appLogsConfiguration: {
+      destination: 'log-analytics'
+      logAnalyticsConfiguration: {
+        customerId: logAnalytics.properties.customerId
+        sharedKey: logAnalytics.listKeys().primarySharedKey
+      }
+    }
   }
 }
 
-module cosmos 'modules/cosmosdb.bicep' = {
-  name: 'cosmosDeploy'
-  params: {
-    namePrefix: namePrefix
-    location: cosmosLocation
-    tags: tags
+resource envStorage 'Microsoft.App/managedEnvironments/storages@2024-03-01' = {
+  parent: containerAppEnv
+  name: 'ollama-model-storage'
+  properties: {
+    azureFile: {
+      accountName: storageAccount.name
+      accountKey: storageAccount.listKeys().keys[0].value
+      shareName: ollamaShare.name
+      accessMode: 'ReadWrite'
+    }
   }
 }
 
-module search 'modules/aisearch.bicep' = {
-  name: 'searchDeploy'
-  params: {
-    namePrefix: namePrefix
-    location: searchLocation
-    tags: tags
+// --- Ollama: internal-only, not exposed to the internet -------------------
+resource ollamaApp 'Microsoft.App/containerApps@2024-03-01' = {
+  name: '${namePrefix}-ollama'
+  location: location
+  tags: tags
+  properties: {
+    managedEnvironmentId: containerAppEnv.id
+    configuration: {
+      ingress: {
+        external: false
+        targetPort: 11434
+        transport: 'http'
+      }
+    }
+    template: {
+      containers: [
+        {
+          name: 'ollama'
+          image: 'ollama/ollama:latest'
+          // Consumption-plan Container Apps only allow fixed CPU:memory
+          // ratio combos, capped at 2.0 vCPU / 4.0Gi memory (no Dedicated/
+          // Workload-Profile environment configured here). This is tight
+          // for two 8B models, but Ollama unloads idle models automatically,
+          // so it should be workable as long as they're not needed
+          // concurrently. If you hit OOM/crashes at runtime, the real fix
+          // is switching this environment to a Workload Profile (Dedicated
+          // D-series) for much larger CPU/memory ceilings — a bigger change
+          // than swapping this one number, so flagging rather than doing
+          // it preemptively.
+          resources: { cpu: json('2.0'), memory: '4Gi' }
+          command: ['/bin/sh', '-c']
+          args: [
+            'ollama serve & sleep 5 && ollama pull ${ollamaModel} && ollama pull ${ollamaModelReasoning} && wait'
+          ]
+          volumeMounts: [
+            { volumeName: 'ollama-models', mountPath: '/root/.ollama' }
+          ]
+        }
+      ]
+      volumes: [
+        {
+          name: 'ollama-models'
+          storageType: 'AzureFile'
+          storageName: envStorage.name
+        }
+      ]
+      // Keep at 1 replica: this is CPU inference behind an internal-only
+      // app, not a horizontally-scaled public service. Scale the box (cpu/
+      // memory above) rather than replica count if you need more headroom.
+      scale: { minReplicas: 1, maxReplicas: 1 }
+    }
   }
 }
 
-module containerApps 'modules/containerapps.bicep' = {
-  name: 'containerAppsDeploy'
-  params: {
-    namePrefix: namePrefix
-    location: location
-    tags: tags
-    backendImage: backendImage
-    frontendImage: frontendImage
-    ollamaModel: ollamaModel
-    ollamaModelReasoning: ollamaModelReasoning
-    apiAuthToken: apiAuthToken
-    logAnalyticsWorkspaceId: monitor.outputs.logAnalyticsWorkspaceId
-    appInsightsConnectionString: monitor.outputs.appInsightsConnectionString
-    cosmosEndpoint: cosmos.outputs.cosmosEndpoint
-    cosmosKey: cosmos.outputs.cosmosPrimaryKey
-    searchEndpoint: search.outputs.searchEndpoint
-    searchKey: search.outputs.searchAdminKey
+// --- Backend: FastAPI, public ----------------------------------------------
+resource backendApp 'Microsoft.App/containerApps@2024-03-01' = {
+  name: '${namePrefix}-backend'
+  location: location
+  tags: tags
+  properties: {
+    managedEnvironmentId: containerAppEnv.id
+    configuration: {
+      ingress: {
+        external: true
+        targetPort: 8000
+        transport: 'auto'
+      }
+      secrets: [
+        { name: 'cosmos-key', value: cosmosKey }
+        { name: 'search-key', value: searchKey }
+        { name: 'api-auth-token', value: apiAuthToken }
+        { name: 'acr-password', value: acr.listCredentials().passwords[0].value }
+      ]
+      registries: [
+        {
+          server: acr.properties.loginServer
+          username: acr.listCredentials().username
+          passwordSecretRef: 'acr-password'
+        }
+      ]
+    }
+    template: {
+      containers: [
+        {
+          name: 'backend'
+          image: backendImage
+          resources: { cpu: json('1.0'), memory: '2Gi' }
+          env: [
+            { name: 'ENVIRONMENT', value: 'production' }
+            { name: 'OLLAMA_BASE_URL', value: 'https://${ollamaApp.properties.configuration.ingress.fqdn}' }
+            { name: 'OLLAMA_MODEL', value: ollamaModel }
+            { name: 'OLLAMA_MODEL_REASONING', value: ollamaModelReasoning }
+            { name: 'COSMOS_ENDPOINT', value: cosmosEndpoint }
+            { name: 'COSMOS_KEY', secretRef: 'cosmos-key' }
+            { name: 'AZURE_SEARCH_ENDPOINT', value: searchEndpoint }
+            { name: 'AZURE_SEARCH_API_KEY', secretRef: 'search-key' }
+            { name: 'APPLICATIONINSIGHTS_CONNECTION_STRING', value: appInsightsConnectionString }
+            { name: 'PUBLIC_BASE_URL', value: 'https://${namePrefix}-backend.${containerAppEnv.properties.defaultDomain}' }
+            { name: 'CORS_ORIGINS', value: 'https://${namePrefix}-frontend.${containerAppEnv.properties.defaultDomain}' }
+            { name: 'API_AUTH_TOKEN', secretRef: 'api-auth-token' }
+          ]
+          probes: [
+            {
+              type: 'Liveness'
+              httpGet: { path: '/api/v1/health', port: 8000 }
+              initialDelaySeconds: 15
+            }
+            {
+              type: 'Readiness'
+              httpGet: { path: '/api/v1/health/ready', port: 8000 }
+              initialDelaySeconds: 10
+            }
+          ]
+        }
+      ]
+      scale: {
+        minReplicas: 1
+        maxReplicas: 5
+        rules: [
+          {
+            name: 'http-scale'
+            http: { metadata: { concurrentRequests: '20' } }
+          }
+        ]
+      }
+    }
   }
 }
 
-output backendUrl string = containerApps.outputs.backendFqdn
-output frontendUrl string = containerApps.outputs.frontendFqdn
-output ollamaUrl string = containerApps.outputs.ollamaFqdn
-output cosmosAccountName string = cosmos.outputs.cosmosAccountName
-output searchServiceName string = search.outputs.searchServiceName
+// --- Frontend: Next.js, public ----------------------------------------------
+resource frontendApp 'Microsoft.App/containerApps@2024-03-01' = {
+  name: '${namePrefix}-frontend'
+  location: location
+  tags: tags
+  properties: {
+    managedEnvironmentId: containerAppEnv.id
+    configuration: {
+      ingress: {
+        external: true
+        targetPort: 3000
+        transport: 'auto'
+      }
+      registries: [
+        {
+          server: acr.properties.loginServer
+          username: acr.listCredentials().username
+          passwordSecretRef: 'acr-password'
+        }
+      ]
+      secrets: [
+        { name: 'acr-password', value: acr.listCredentials().passwords[0].value }
+        { name: 'api-auth-token', value: apiAuthToken }
+      ]
+    }
+    template: {
+      containers: [
+        {
+          name: 'frontend'
+          image: frontendImage
+          resources: { cpu: json('0.5'), memory: '1Gi' }
+          env: [
+            { name: 'NEXT_PUBLIC_API_BASE_URL', value: 'https://${backendApp.properties.configuration.ingress.fqdn}/api/v1' }
+            { name: 'BACKEND_API_TOKEN', secretRef: 'api-auth-token' }
+          ]
+        }
+      ]
+      scale: { minReplicas: 1, maxReplicas: 3 }
+    }
+  }
+}
+
+output backendFqdn string = backendApp.properties.configuration.ingress.fqdn
+output frontendFqdn string = frontendApp.properties.configuration.ingress.fqdn
+output ollamaFqdn string = ollamaApp.properties.configuration.ingress.fqdn
+output acrLoginServer string = acr.properties.loginServer
