@@ -34,7 +34,7 @@ param frontendImage string = 'mcr.microsoft.com/k8se/quickstart:latest'
 param ollamaModel string = 'llama3.1:8b'
 
 @description('Ollama writing/reasoning model, pulled automatically on first Ollama container start')
-param ollamaModelReasoning string = 'deepseek-r1:14b'
+param ollamaModelReasoning string = 'deepseek-r1:8b'
 @secure()
 @description('Shared bearer token the frontend uses to call the backend API')
 param apiAuthToken string

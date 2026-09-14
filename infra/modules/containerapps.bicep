@@ -28,7 +28,7 @@ param searchEndpoint string
 @secure()
 param searchKey string
 param ollamaModel string = 'llama3.1:8b'
-param ollamaModelReasoning string = 'deepseek-r1:14b'
+param ollamaModelReasoning string = 'deepseek-r1:8b'
 @secure()
 param apiAuthToken string
 

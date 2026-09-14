@@ -61,6 +61,8 @@ def get_tool_llm() -> LLM:
 
 @lru_cache
 def get_writing_llm() -> LLM:
+    """  - get_writing_llm(): deepseek-r1:8b — a reasoning-tuned model, assigned to"""
+    """ollama pull deepseek-r1:8b"""
     """Pure-text reasoning model (Writing, Editing, Social agents) — deepseek-r1:8b."""
     return LLM(
         model=f"ollama_chat/{settings.ollama_model_reasoning}",
