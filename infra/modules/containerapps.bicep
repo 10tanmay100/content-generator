@@ -1,18 +1,12 @@
-// Azure Container Apps environment + Ollama (local LLM server), backend
-// (FastAPI), and frontend (Next.js) apps.
+// Azure Container Apps environment + backend (FastAPI) and frontend
+// (Next.js) apps. Both run on the default Consumption profile — pay only
+// for active usage.
 //
-// Ollama runs as its own internal-only Container App in this environment so
-// the backend can reach it the same way it reaches localhost:11434 in dev —
-// just over the environment's internal network instead. Pulled models
-// persist on an Azure Files share so they aren't re-downloaded on every
-// restart/revision.
-//
-// IMPORTANT: this runs Ollama on CPU (no GPU workload profile configured).
-// An 8B model on CPU is noticeably slower than on a local GPU/Apple Silicon
-// machine — expect a full 6-agent run to take several minutes longer in
-// Azure than it does locally. If that's not acceptable, look into Azure
-// Container Apps GPU workload profiles (region-limited, costs more) or
-// swap the backend to a hosted LLM API for the cloud deployment only.
+// The backend calls Anthropic's Claude API directly for every agent (no
+// self-hosted model server), which is why this is dramatically simpler
+// than earlier versions of this file: no Ollama container, no persistent
+// model storage, no Dedicated workload profile, no memory tuning. Claude
+// runs on Anthropic's infrastructure, not ours.
 param namePrefix string
 param location string
 param tags object
@@ -27,8 +21,9 @@ param cosmosKey string
 param searchEndpoint string
 @secure()
 param searchKey string
-param ollamaModel string = 'llama3.1:8b'
-param ollamaModelReasoning string = 'deepseek-r1:8b'
+@secure()
+param anthropicApiKey string
+param anthropicModel string = 'claude-sonnet-5'
 @secure()
 param apiAuthToken string
 
@@ -44,26 +39,6 @@ resource acr 'Microsoft.ContainerRegistry/registries@2023-11-01-preview' = {
   properties: { adminUserEnabled: true }
 }
 
-// --- Persistent storage for pulled Ollama models --------------------------
-resource storageAccount 'Microsoft.Storage/storageAccounts@2023-01-01' = {
-  name: toLower(replace('${namePrefix}ollamasa', '-', ''))
-  location: location
-  tags: tags
-  sku: { name: 'Standard_LRS' }
-  kind: 'StorageV2'
-}
-
-resource fileService 'Microsoft.Storage/storageAccounts/fileServices@2023-01-01' = {
-  parent: storageAccount
-  name: 'default'
-}
-
-resource ollamaShare 'Microsoft.Storage/storageAccounts/fileServices/shares@2023-01-01' = {
-  parent: fileService
-  name: 'ollama-models'
-  properties: { shareQuota: 100 }
-}
-
 resource containerAppEnv 'Microsoft.App/managedEnvironments@2024-03-01' = {
   name: '${namePrefix}-env'
   location: location
@@ -76,91 +51,6 @@ resource containerAppEnv 'Microsoft.App/managedEnvironments@2024-03-01' = {
         sharedKey: logAnalytics.listKeys().primarySharedKey
       }
     }
-    // Workload-profiles-v2 environment: keeps the default Consumption
-    // profile (backend, frontend, and everything else stay pay-per-use)
-    // and adds one Dedicated D4 node (4 vCPU / 16GB) exclusively for
-    // Ollama, which was consistently crash-looping under Consumption's
-    // hard 4GB ceiling — no 8B-class model reliably fit in it. Only
-    // Ollama moves to this Dedicated profile; nothing else changes cost
-    // shape. minimumCount/maximumCount pinned to 1 (no autoscaling) since
-    // this is a single internal LLM service, not a bursty public workload.
-    workloadProfiles: [
-      {
-        name: 'Consumption'
-        workloadProfileType: 'Consumption'
-      }
-      {
-        name: 'ollama-dedicated'
-        workloadProfileType: 'D4'
-        minimumCount: 1
-        maximumCount: 1
-      }
-    ]
-  }
-}
-
-resource envStorage 'Microsoft.App/managedEnvironments/storages@2024-03-01' = {
-  parent: containerAppEnv
-  name: 'ollama-model-storage'
-  properties: {
-    azureFile: {
-      accountName: storageAccount.name
-      accountKey: storageAccount.listKeys().keys[0].value
-      shareName: ollamaShare.name
-      accessMode: 'ReadWrite'
-    }
-  }
-}
-
-// --- Ollama: internal-only, not exposed to the internet -------------------
-resource ollamaApp 'Microsoft.App/containerApps@2024-03-01' = {
-  name: '${namePrefix}-ollama'
-  location: location
-  tags: tags
-  properties: {
-    managedEnvironmentId: containerAppEnv.id
-    workloadProfileName: 'ollama-dedicated'
-    configuration: {
-      ingress: {
-        external: false
-        targetPort: 11434
-        transport: 'http'
-      }
-    }
-    template: {
-      containers: [
-        {
-          name: 'ollama'
-          image: 'ollama/ollama:latest'
-          // Running on the 'ollama-dedicated' D4 profile (4 vCPU / 16GB
-          // node) instead of Consumption, which was consistently
-          // crash-looping trying to load even a single 8B model within its
-          // hard 4GB ceiling. Dedicated profiles aren't restricted to
-          // Consumption's fixed cpu:memory ratio table, so this requests
-          // most of the node's capacity, leaving a couple GB of headroom
-          // for the OS/platform rather than requesting the exact full 16Gi.
-          resources: { cpu: json('4.0'), memory: '14Gi' }
-          command: ['/bin/sh', '-c']
-          args: [
-            'ollama serve & sleep 5 && ollama pull ${ollamaModel} && ollama pull ${ollamaModelReasoning} && wait'
-          ]
-          volumeMounts: [
-            { volumeName: 'ollama-models', mountPath: '/root/.ollama' }
-          ]
-        }
-      ]
-      volumes: [
-        {
-          name: 'ollama-models'
-          storageType: 'AzureFile'
-          storageName: envStorage.name
-        }
-      ]
-      // Keep at 1 replica: this is CPU inference behind an internal-only
-      // app, not a horizontally-scaled public service. Scale the box (cpu/
-      // memory above) rather than replica count if you need more headroom.
-      scale: { minReplicas: 1, maxReplicas: 1 }
-    }
   }
 }
 
@@ -171,7 +61,6 @@ resource backendApp 'Microsoft.App/containerApps@2024-03-01' = {
   tags: tags
   properties: {
     managedEnvironmentId: containerAppEnv.id
-    workloadProfileName: 'Consumption'
     configuration: {
       ingress: {
         external: true
@@ -181,6 +70,7 @@ resource backendApp 'Microsoft.App/containerApps@2024-03-01' = {
       secrets: [
         { name: 'cosmos-key', value: cosmosKey }
         { name: 'search-key', value: searchKey }
+        { name: 'anthropic-api-key', value: anthropicApiKey }
         { name: 'api-auth-token', value: apiAuthToken }
         { name: 'acr-password', value: acr.listCredentials().passwords[0].value }
       ]
@@ -200,9 +90,8 @@ resource backendApp 'Microsoft.App/containerApps@2024-03-01' = {
           resources: { cpu: json('1.0'), memory: '2Gi' }
           env: [
             { name: 'ENVIRONMENT', value: 'production' }
-            { name: 'OLLAMA_BASE_URL', value: 'https://${ollamaApp.properties.configuration.ingress.fqdn}' }
-            { name: 'OLLAMA_MODEL', value: ollamaModel }
-            { name: 'OLLAMA_MODEL_REASONING', value: ollamaModelReasoning }
+            { name: 'ANTHROPIC_API_KEY', secretRef: 'anthropic-api-key' }
+            { name: 'ANTHROPIC_MODEL', value: anthropicModel }
             { name: 'COSMOS_ENDPOINT', value: cosmosEndpoint }
             { name: 'COSMOS_KEY', secretRef: 'cosmos-key' }
             { name: 'AZURE_SEARCH_ENDPOINT', value: searchEndpoint }
@@ -247,7 +136,6 @@ resource frontendApp 'Microsoft.App/containerApps@2024-03-01' = {
   tags: tags
   properties: {
     managedEnvironmentId: containerAppEnv.id
-    workloadProfileName: 'Consumption'
     configuration: {
       ingress: {
         external: true
@@ -285,5 +173,4 @@ resource frontendApp 'Microsoft.App/containerApps@2024-03-01' = {
 
 output backendFqdn string = backendApp.properties.configuration.ingress.fqdn
 output frontendFqdn string = frontendApp.properties.configuration.ingress.fqdn
-output ollamaFqdn string = ollamaApp.properties.configuration.ingress.fqdn
 output acrLoginServer string = acr.properties.loginServer

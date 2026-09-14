@@ -9,9 +9,9 @@ export default function HomePage() {
           Six agents. One topic. A finished draft.
         </h1>
         <p className="mt-5 text-muted text-base md:text-lg max-w-xl mx-auto leading-relaxed">
-          Type a topic below. Six local models — running on your own Ollama
-          install — research it, write it, edit it, score it for SEO,
-          illustrate it, and repurpose it for social, one after another.
+          Type a topic below. Six agents — every one powered by Claude Sonnet —
+          research it, write it, edit it, score it for SEO, illustrate it,
+          and repurpose it for social, one after another.
         </p>
 
         <div className="mt-10">
@@ -25,10 +25,10 @@ export default function HomePage() {
 
       <section className="max-w-3xl mx-auto px-6 pb-20 grid sm:grid-cols-3 gap-8 text-sm">
         <div>
-          <p className="text-ink font-medium">No cloud model bill</p>
+          <p className="text-ink font-medium">Powered by Claude Sonnet</p>
           <p className="text-muted mt-1 leading-relaxed">
-            Runs on llama3.1 and deepseek-r1 through your local Ollama
-            server — nothing leaves your machine during generation.
+            Every agent runs on Anthropic's Claude Sonnet — reliable tool
+            use and strong long-form writing, no model server to babysit.
           </p>
         </div>
         <div>

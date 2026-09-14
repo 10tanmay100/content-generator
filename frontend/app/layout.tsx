@@ -18,7 +18,7 @@ const body = Inter({
 export const metadata: Metadata = {
   title: "Content Pipeline — six agents, one topic",
   description:
-    "Give it a topic. Six local models research it, write it, edit it, optimize it, illustrate it, and repurpose it for social — end to end.",
+    "Give it a topic. Six agents powered by Claude Sonnet research it, write it, edit it, optimize it, illustrate it, and repurpose it for social — end to end.",
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
@@ -28,7 +28,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         <Navbar />
         <main className="flex-1 w-full">{children}</main>
         <footer className="text-center text-xs text-muted py-8 border-t border-edge mt-16">
-          Runs on your own Ollama models · deploys to Azure Container Apps
+          Powered by Claude Sonnet · deploys to Azure Container Apps
         </footer>
       </body>
     </html>

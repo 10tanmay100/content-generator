@@ -46,6 +46,26 @@ a:focus-visible, button:focus-visible, input:focus-visible, select:focus-visible
   100% { left: 100%; opacity: 0; }
 }
 
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes breathe {
+  0%, 100% { opacity: 0.55; transform: scale(1); }
+  50% { opacity: 1; transform: scale(1.08); }
+}
+
+.loading-glow {
+  animation: breathe 2.6s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .loading-glow {
+    animation: none;
+  }
+}
+
 .relay-pulse {
   animation: travel-glow 4.5s ease-in-out infinite;
 }

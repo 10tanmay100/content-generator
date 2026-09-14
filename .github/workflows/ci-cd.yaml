@@ -206,7 +206,8 @@ jobs:
               searchLocation="$EFFECTIVE_SEARCH_LOCATION" \
               backendImage=${{ env.ACR_NAME }}.azurecr.io/${{ env.BACKEND_REPO }}:${{ needs.build-and-push.outputs.image-tag }} \
               frontendImage=${{ env.ACR_NAME }}.azurecr.io/${{ env.FRONTEND_REPO }}:${{ needs.build-and-push.outputs.image-tag }} \
-              apiAuthToken=${{ secrets.API_AUTH_TOKEN }}
+              apiAuthToken="${{ secrets.API_AUTH_TOKEN }}" \
+              anthropicApiKey="${{ secrets.ANTHROPIC_API_KEY }}"
 
   # --------------------------------------------------------------------------
   deploy-apps:
@@ -243,14 +244,9 @@ jobs:
   # --------------------------------------------------------------------------
   # Post-deploy verification: actually calls the live backend API — not just
   # checking that the container started. /content/generate/sync exercises
-  # the full real path (backend -> Ollama over the internal network -> back),
-  # so a pass here proves Ollama is reachable and generating, not just "up".
-  #
-  # Ollama itself is never called directly from this job: it's internal-only
-  # ingress (not exposed to the public internet), which is the deliberate,
-  # secure choice for an unauthenticated local-model server. Going through
-  # the public backend API is both the safer path and the more meaningful
-  # test, since it's the same path real users hit.
+  # the full real path (backend -> Anthropic's Claude API -> back), so a
+  # pass here proves the API key works and generation actually runs, not
+  # just that the container is "up".
   smoke-test:
     needs: [deploy-apps, build-and-push]
     runs-on: ubuntu-latest
@@ -284,17 +280,16 @@ jobs:
           echo "::error::Backend never became healthy."
           exit 1
 
-      # Ollama needs several minutes on a fresh deploy to pull both models
-      # over the network before it can actually generate anything, so this
-      # step allows a generous timeout on top of the health check above.
-      - name: Generate real content through the deployed API (exercises Ollama end-to-end)
+      # No self-hosted model to warm up anymore — Claude runs on Anthropic's
+      # infrastructure, so a much shorter timeout is enough here than the
+      # 900s this used to need while Ollama was still pulling models.
+      - name: Generate real content through the deployed API (exercises Claude end-to-end)
         run: |
           # No -f here deliberately: with -f, curl swallows the response
-          # body on any non-2xx status, making failures undiagnosable (that
-          # cost a full round-trip last time). Capture the status code and
-          # body separately instead, so a failure always shows exactly what
-          # the backend actually said.
-          HTTP_STATUS=$(curl -s --max-time 900 -o /tmp/response.json -w "%{http_code}" \
+          # body on any non-2xx status, making failures undiagnosable.
+          # Capture the status code and body separately instead, so a
+          # failure always shows exactly what the backend actually said.
+          HTTP_STATUS=$(curl -s --max-time 120 -o /tmp/response.json -w "%{http_code}" \
             -X POST "${{ steps.url.outputs.backend_url }}/api/v1/content/generate/sync" \
             -H "Authorization: Bearer ${{ secrets.API_AUTH_TOKEN }}" \
             -H "Content-Type: application/json" \

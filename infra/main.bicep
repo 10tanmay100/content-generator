@@ -1,6 +1,6 @@
 // ============================================================================
 // Main orchestrator: deploys the full CrewAI content pipeline infra on Azure
-//   - Container Apps environment (backend API + optional frontend)
+//   - Container Apps environment (backend API + frontend, both Consumption)
 //   - Cosmos DB (jobs + content)
 //   - Azure AI Search (vector/semantic)
 //   - Log Analytics + Application Insights (Azure Monitor)
@@ -30,11 +30,13 @@ param backendImage string = 'mcr.microsoft.com/k8se/quickstart:latest'
 @description('Container image for the frontend (Next.js)')
 param frontendImage string = 'mcr.microsoft.com/k8se/quickstart:latest'
 
-@description('Ollama tool-calling model, pulled automatically on first Ollama container start')
-param ollamaModel string = 'llama3.1:8b'
+@secure()
+@description('Anthropic API key, used by the backend to call Claude')
+param anthropicApiKey string
 
-@description('Ollama writing/reasoning model, pulled automatically on first Ollama container start')
-param ollamaModelReasoning string = 'deepseek-r1:8b'
+@description('Claude model used by every agent')
+param anthropicModel string = 'claude-sonnet-5'
+
 @secure()
 @description('Shared bearer token the frontend uses to call the backend API')
 param apiAuthToken string
@@ -81,8 +83,8 @@ module containerApps 'modules/containerapps.bicep' = {
     tags: tags
     backendImage: backendImage
     frontendImage: frontendImage
-    ollamaModel: ollamaModel
-    ollamaModelReasoning: ollamaModelReasoning
+    anthropicApiKey: anthropicApiKey
+    anthropicModel: anthropicModel
     apiAuthToken: apiAuthToken
     logAnalyticsWorkspaceId: monitor.outputs.logAnalyticsWorkspaceId
     appInsightsConnectionString: monitor.outputs.appInsightsConnectionString
@@ -95,7 +97,5 @@ module containerApps 'modules/containerapps.bicep' = {
 
 output backendUrl string = containerApps.outputs.backendFqdn
 output frontendUrl string = containerApps.outputs.frontendFqdn
-output ollamaUrl string = containerApps.outputs.ollamaFqdn
 output cosmosAccountName string = cosmos.outputs.cosmosAccountName
 output searchServiceName string = search.outputs.searchServiceName
-

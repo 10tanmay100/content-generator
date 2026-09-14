@@ -9,7 +9,6 @@
     "searchLocation": { "value": "westus2" },
     "backendImage": { "value": "<acr-name>.azurecr.io/content-backend:latest" },
     "frontendImage": { "value": "<acr-name>.azurecr.io/content-frontend:latest" },
-    "ollamaModel": { "value": "llama3.1:8b" },
-    "ollamaModelReasoning": { "value": "deepseek-r1:8b" }
+    "anthropicModel": { "value": "claude-sonnet-5" }
   }
 }

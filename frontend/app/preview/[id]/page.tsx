@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import AgentProgress from "@/components/AgentProgress";
+import CrewLoadingScreen from "@/components/CrewLoadingScreen";
 import ContentPreview from "@/components/ContentPreview";
 import type { JobRecord } from "@/lib/api";
 
@@ -36,14 +36,17 @@ export default function PreviewPage({ params }: { params: { id: string } }) {
     };
   }, [params.id]);
 
+  const isInProgress = !job || (job.status !== "completed" && job.status !== "failed");
+
   return (
     <div className="max-w-3xl mx-auto px-6 py-16 space-y-6">
+      {isInProgress && <CrewLoadingScreen status={job?.status ?? "pending"} />}
+
       <div>
         <h1 className="font-display text-2xl font-semibold text-ink mb-1">
           {job?.topic ?? "Starting the crew…"}
         </h1>
         <p className="text-muted text-sm mb-5">Job {params.id}</p>
-        <AgentProgress status={job?.status ?? "pending"} />
       </div>
 
       {errorMsg && <p className="text-red-400 text-sm">{errorMsg}</p>}
@@ -51,9 +54,6 @@ export default function PreviewPage({ params }: { params: { id: string } }) {
         <p className="text-red-400 text-sm">Generation failed: {job.error}</p>
       )}
       {job?.status === "completed" && <ContentPreview job={job} />}
-      {job && job.status !== "completed" && job.status !== "failed" && (
-        <p className="text-muted text-sm">This refreshes automatically every few seconds.</p>
-      )}
     </div>
   );
 }
